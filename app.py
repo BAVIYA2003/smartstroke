@@ -331,11 +331,11 @@ if st.sidebar.button("Analyze Patient"):
         st.pyplot(fig)
         plt.close(fig)
         # 🔥 FINAL SUMMARY BOX
-        final_risk = initial_risk - final_risk
-        reduction = risks[-1]
+        final_risk = risks[-1] 
+        reduction = initial_risk - final_risk
         
         st.success(
-            f"Final Risk: {final_risk:.2%}  |  Reduction: {reduction:.2%}"
+            f"Final Risk: {reduction:.2%}  |  Reduction: {final_risk:.2%}"
         )
         
         # 🔥 INTERPRETATION
