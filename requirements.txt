@@ -1,15 +1,6 @@
---extra-index-url https://download.pytorch.org/whl/cpu
--f https://data.pyg.org/whl/torch-2.1.0+cpu.html
-
 streamlit==1.32.0
-torch==2.1.0+cpu
-
-torch-scatter==2.1.2+pt21cpu
-torch-sparse==0.6.18+pt21cpu
-torch-cluster==1.6.3+pt21cpu
-torch-spline-conv==1.2.2+pt21cpu
+torch==2.1.0
 torch-geometric==2.5.3
-
 pandas
 numpy
 joblib
