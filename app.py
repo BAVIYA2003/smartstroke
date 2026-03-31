@@ -145,16 +145,43 @@ st.sidebar.header("Patient Input")
 
 input_data = {}
 
+# REAL inputs
+input_data['age'] = st.sidebar.slider("Age", 0, 100, 30)
+
+input_data['gender'] = st.sidebar.selectbox("Gender", ["Male", "Female"])
+input_data['gender'] = 1 if input_data['gender'] == "Male" else 0
+
+# binary symptoms
+core_features = [
+    'chest_pain',
+    'high_blood_pressure',
+    'irregular_heartbeat',
+    'shortness_of_breath',
+    'fatigue_weakness',
+    'dizziness',
+    'swelling_edema',
+    'neck_jaw_pain',
+    'excessive_sweating',
+    'persistent_cough',
+    'nausea_vomiting',
+    'chest_discomfort',
+    'cold_hands_feet',
+    'snoring_sleep_apnea',
+    'anxiety_doom'
+]
+
 for feature in core_features:
-    input_data[feature] = st.sidebar.slider(
+    input_data[feature] = st.sidebar.selectbox(
         feature.replace("_", " "),
-        min_value=-3.0,
-        max_value=3.0,
-        value=0.0,
-        step=0.1
+        ["No", "Yes"]
     )
+    input_data[feature] = 1 if input_data[feature] == "Yes" else 0
 
 input_df = pd.DataFrame([input_data])
+
+# IMPORTANT → scale AFTER input
+input_df = scaler.transform(input_df)
+input_df = pd.DataFrame(input_df, columns=core_features)
 
 # =========================
 # ANALYSIS
@@ -168,71 +195,128 @@ if st.sidebar.button("Analyze Patient"):
         st.subheader("🔮 Risk Prediction")
 
         prob = model_predict(input_df)[0]
-        st.metric("Stroke Risk", f"{prob:.3f}")
 
+        # % format (better)
+        st.metric("Stroke Risk", f"{prob:.2%}")
+
+        # Visual risk bar
+        st.progress(float(prob))
+
+        # Color-coded risk
         if prob < 0.3:
-            st.success("Low Risk")
+            st.success("🟢 Low Risk")
         elif prob < 0.7:
-            st.warning("Moderate Risk")
+            st.warning("🟡 Moderate Risk")
         else:
-            st.error("High Risk")
+            st.error("🔴 High Risk")
 
     # 📊 Explainability
-    with col2:
-        st.subheader("📊 Key Factors")
 
-        patient_tensor = torch.FloatTensor(
-            scaler.transform(input_df)[0]
-        ).unsqueeze(-1)
+with col2:
+    st.subheader("📊 Key Risk Factors")
 
-        patient_data = Data(
-            x=patient_tensor,
-            edge_index=edge_index,
-            batch=torch.zeros(patient_tensor.size(0), dtype=torch.long)
-        )
+    # Prepare tensor
+    patient_tensor = torch.FloatTensor(
+        input_df.values[0]
+    ).unsqueeze(-1)
 
-        patient_data.x.requires_grad_(True)
-
-        logit, _ = model(patient_data)
-        logit.backward()
-
-        importance = patient_data.x.grad.abs().squeeze().detach().numpy()
-        importance = importance / (importance.sum() + 1e-8)
-
-        top_idx = np.argsort(importance)[-5:]
-
-        for i in reversed(top_idx):
-            st.write(
-                f"👉 {core_features[i].replace('_',' ')} "
-                f"({importance[i]:.3f})"
-            )
-
-    # 💡 PPO Recommendations
-    st.subheader("💡 Intervention Plan")
-
-    state = scaler.transform(input_df)[0].copy()
-    initial_risk = prob
-
-    for step in range(5):
-        state_t = torch.FloatTensor(state)
-
-        probs = policy(state_t)
-        action = torch.argmax(probs).item()
-
-        feature, change = ACTIONS[action]
-
-        idx = core_features.index(feature)
-        state[idx] = np.clip(state[idx] + change, -3, 3)
-
-        new_risk = model_predict(
-            pd.DataFrame([state], columns=core_features)
-        )[0]
-
-        st.write(
-            f"Step {step+1}: Reduce {feature.replace('_',' ')} → Risk: {new_risk:.3f}"
-        )
-
-    st.success(
-        f"Final Risk: {new_risk:.3f} | Reduction: {initial_risk - new_risk:.3f}"
+    patient_data = Data(
+        x=patient_tensor,
+        edge_index=edge_index,
+        batch=torch.zeros(patient_tensor.size(0), dtype=torch.long)
     )
 
+    patient_data.x.requires_grad_(True)
+
+    # Forward + backward
+    logit, _ = model(patient_data)
+    logit.backward()
+
+    importance = patient_data.x.grad.abs().squeeze().detach().numpy()
+    importance = importance / (importance.sum() + 1e-8)
+
+    # Top features
+    top_idx = np.argsort(importance)[-5:]
+    features = [core_features[i].replace("_", " ") for i in top_idx]
+    values = importance[top_idx]
+
+    # 🔥 BAR CHART (NEW)
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    ax.barh(features, values)
+    ax.set_xlabel("Importance")
+    ax.set_title("Top Contributing Factors")
+
+    st.pyplot(fig)
+
+    # 🔥 TEXT SUMMARY (NEW)
+    st.markdown("### 🔍 Key Insights")
+
+    for i in reversed(top_idx):
+        st.write(
+            f"👉 **{core_features[i].replace('_',' ')}** "
+            f"({importance[i]:.2%})"
+        )
+
+    # 💡 PPO Recommendations
+st.subheader("💡 Personalized Intervention Plan")
+
+state = input_df.values[0].copy()  # ✅ FIXED
+initial_risk = prob
+
+steps = []
+risks = [initial_risk]
+
+for step in range(5):
+    state_t = torch.FloatTensor(state)
+
+    probs = policy(state_t)
+    action = torch.argmax(probs).item()
+
+    feature, change = ACTIONS[action]
+
+    idx = core_features.index(feature)
+    state[idx] = np.clip(state[idx] + change, -3, 3)
+
+    new_risk = model_predict(
+        pd.DataFrame([state], columns=core_features)
+    )[0]
+
+    steps.append((feature, new_risk))
+    risks.append(new_risk)
+
+# 🔥 SHOW STEPS CLEANLY
+st.markdown("### 🧭 Recommended Actions")
+
+for i, (feature, r) in enumerate(steps):
+    st.write(
+        f"**Step {i+1}:** Improve **{feature.replace('_',' ')}** → Risk: {r:.2%}"
+    )
+
+# 🔥 RISK TREND GRAPH
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots()
+ax.plot(range(len(risks)), risks, marker='o')
+ax.set_title("Risk Reduction Over Steps")
+ax.set_xlabel("Step")
+ax.set_ylabel("Risk")
+
+st.pyplot(fig)
+
+# 🔥 FINAL SUMMARY BOX
+final_risk = risks[-1]
+reduction = initial_risk - final_risk
+
+st.success(
+    f"Final Risk: {final_risk:.2%}  |  Reduction: {reduction:.2%}"
+)
+
+# 🔥 INTERPRETATION
+if reduction > 0.3:
+    st.success("Excellent improvement with lifestyle changes 🚀")
+elif reduction > 0.15:
+    st.warning("Moderate improvement possible ⚠️")
+else:
+    st.error("Limited improvement — medical attention advised ❗")
