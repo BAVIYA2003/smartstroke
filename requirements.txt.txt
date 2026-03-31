@@ -1,6 +1,10 @@
 streamlit
-torch
+torch==2.0.1
 torch-geometric
-joblib
+torch-scatter
+torch-sparse
+torch-cluster
+torch-spline-conv
 pandas
 numpy
+joblib
