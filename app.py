@@ -280,7 +280,19 @@ if st.sidebar.button("Analyze Patient"):
             state_t = torch.FloatTensor(state).to(device)
         
             probs = policy(state_t)
-            action = torch.argmax(probs).item()
+        
+            # Get top 3 actions
+            topk = torch.topk(probs, k=3)
+            
+            action = None
+            for a in topk.indices:
+                if a.item() not in used_actions:
+                    action = a.item()
+                    break
+            
+            # fallback if all used
+            if action is None:
+                action = torch.argmax(probs).item()
             if action in used_actions:
                 step+=1
                 continue
