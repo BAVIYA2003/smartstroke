@@ -152,7 +152,7 @@ input_data['gender'] = st.sidebar.selectbox("Gender", ["Male", "Female"])
 input_data['gender'] = 1 if input_data['gender'] == "Male" else 0
 
 # binary symptoms
-core_features = [
+bin_features = [
     'chest_pain',
     'high_blood_pressure',
     'irregular_heartbeat',
@@ -170,7 +170,7 @@ core_features = [
     'anxiety_doom'
 ]
 
-for feature in core_features:
+for feature in bin_features:
     input_data[feature] = st.sidebar.selectbox(
         feature.replace("_", " "),
         ["No", "Yes"]
@@ -179,9 +179,8 @@ for feature in core_features:
 
 input_df = pd.DataFrame([input_data])
 
-# IMPORTANT → scale AFTER input
-input_df = scaler.transform(input_df)
-input_df = pd.DataFrame(input_df, columns=core_features)
+# Ensure correct column order
+input_df = input_df[core_features]
 
 # =========================
 # ANALYSIS
@@ -212,111 +211,125 @@ if st.sidebar.button("Analyze Patient"):
 
     # 📊 Explainability
 
-with col2:
-    st.subheader("📊 Key Risk Factors")
+    with col2:
+        st.subheader("📊 Key Risk Factors")
+    
+        # Prepare tensor
+        model.eval()
 
-    # Prepare tensor
-    patient_tensor = torch.FloatTensor(
-        input_df.values[0]
-    ).unsqueeze(-1)
-
-    patient_data = Data(
-        x=patient_tensor,
-        edge_index=edge_index,
-        batch=torch.zeros(patient_tensor.size(0), dtype=torch.long)
-    )
-
-    patient_data.x.requires_grad_(True)
-
-    # Forward + backward
-    logit, _ = model(patient_data)
-    logit.backward()
-
-    importance = patient_data.x.grad.abs().squeeze().detach().numpy()
-    importance = importance / (importance.sum() + 1e-8)
-
-    # Top features
-    top_idx = np.argsort(importance)[-5:]
-    features = [core_features[i].replace("_", " ") for i in top_idx]
-    values = importance[top_idx]
-
-    # 🔥 BAR CHART (NEW)
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots()
-    ax.barh(features, values)
-    ax.set_xlabel("Importance")
-    ax.set_title("Top Contributing Factors")
-
-    st.pyplot(fig)
-
-    # 🔥 TEXT SUMMARY (NEW)
-    st.markdown("### 🔍 Key Insights")
-
-    for i in reversed(top_idx):
-        st.write(
-            f"👉 **{core_features[i].replace('_',' ')}** "
-            f"({importance[i]:.2%})"
+        patient_tensor = torch.FloatTensor(
+            input_df.values[0]
+        ).unsqueeze(-1).to(device)
+        
+        patient_data = Data(
+            x=patient_tensor,
+            edge_index=edge_index.to(device),
+            batch=torch.zeros(patient_tensor.size(0), dtype=torch.long).to(device)
         )
+        
+        patient_data.x.requires_grad_(True)
+        
+        model.zero_grad()
+        logit, _ = model(patient_data)
+        logit.backward()
+        
+        importance = patient_data.x.grad.abs().squeeze().detach().cpu().numpy()
+        importance = importance / (importance.sum() + 1e-8)
+        
+        top_idx = np.argsort(importance)[-5:]
+        top_idx = top_idx[np.argsort(importance[top_idx])]
+        
+        features = [core_features[i].replace("_", " ") for i in top_idx]
+        values = importance[top_idx]
+        
+            
+        # 🔥 BAR CHART (NEW)
+        import matplotlib.pyplot as plt
+    
+        fig, ax = plt.subplots()
+        ax.barh(features, values)
+        ax.set_xlabel("Importance")
+        ax.set_title("Top Contributing Factors")
+    
+        st.pyplot(fig)
+        plt.close(fig)
+        # 🔥 TEXT SUMMARY (NEW)
+        st.markdown("### 🔍 Key Insights")
+    
+        for i in reversed(top_idx):
+            st.write(
+                f"👉 **{core_features[i].replace('_',' ')}** "
+                f"({importance[i]:.2%})"
+            )
 
     # 💡 PPO Recommendations
-st.subheader("💡 Personalized Intervention Plan")
+    st.subheader("💡 Personalized Intervention Plan")
+    
+    state = input_df.values[0].copy()# ✅ FIXED
+    
+    initial_risk = prob
+    
+    steps = []
+    risks = [initial_risk]
+    feature_to_idx = {f: i for i, f in enumerate(core_features)}
+    used_actions = set()
+    policy.eval()
+    with torch.no_grad():
+        step = 0
+        while len(steps) < 5 and step < 10:
+            state_t = torch.FloatTensor(state).to(device)
+        
+            probs = policy(state_t)
+            action = torch.argmax(probs).item()
+            if action in used_actions:
+                step+=1
+                continue
+        
+            used_actions.add(action)
+            feature, change = ACTIONS[action]
+            idx = feature_to_idx[feature]
+            decay = 1.0 / (len(steps) + 1)
+            
+            state[idx] = np.clip(state[idx] + change * decay,-3, 3)
+            new_df = pd.DataFrame([state], columns=core_features)
+            new_df = new_df[core_features]
 
-state = input_df.values[0].copy()  # ✅ FIXED
-initial_risk = prob
-
-steps = []
-risks = [initial_risk]
-
-for step in range(5):
-    state_t = torch.FloatTensor(state)
-
-    probs = policy(state_t)
-    action = torch.argmax(probs).item()
-
-    feature, change = ACTIONS[action]
-
-    idx = core_features.index(feature)
-    state[idx] = np.clip(state[idx] + change, -3, 3)
-
-    new_risk = model_predict(
-        pd.DataFrame([state], columns=core_features)
-    )[0]
-
-    steps.append((feature, new_risk))
-    risks.append(new_risk)
-
-# 🔥 SHOW STEPS CLEANLY
-st.markdown("### 🧭 Recommended Actions")
-
-for i, (feature, r) in enumerate(steps):
-    st.write(
-        f"**Step {i+1}:** Improve **{feature.replace('_',' ')}** → Risk: {r:.2%}"
-    )
-
-# 🔥 RISK TREND GRAPH
-import matplotlib.pyplot as plt
-
-fig, ax = plt.subplots()
-ax.plot(range(len(risks)), risks, marker='o')
-ax.set_title("Risk Reduction Over Steps")
-ax.set_xlabel("Step")
-ax.set_ylabel("Risk")
-
-st.pyplot(fig)
-
-# 🔥 FINAL SUMMARY BOX
-final_risk = risks[-1]
-reduction = initial_risk - final_risk
-
-st.success(
-    f"Final Risk: {final_risk:.2%}  |  Reduction: {reduction:.2%}"
-)
-
-# 🔥 INTERPRETATION
-if reduction > 0.3:
-    st.success("Excellent improvement with lifestyle changes 🚀")
-elif reduction > 0.15:
-    st.warning("Moderate improvement possible ⚠️")
-else:
-    st.error("Limited improvement — medical attention advised ❗")
+            new_risk = model_predict(new_df)[0]
+        
+            steps.append((feature, new_risk))
+            risks.append(new_risk)
+            step+=1
+        # 🔥 SHOW STEPS CLEANLY
+        st.markdown("### 🧭 Recommended Actions")
+        
+        for i, (feature, r) in enumerate(steps):
+            st.write(
+                f"**Step {i+1}:** Improve **{feature.replace('_',' ')}** → Risk: {r:.2%}"
+            )
+        
+        # 🔥 RISK TREND GRAPH
+        import matplotlib.pyplot as plt
+        
+        fig, ax = plt.subplots()
+        ax.plot(range(len(risks)), risks, marker='o')
+        ax.set_title("Risk Reduction Over Steps")
+        ax.set_xlabel("Step")
+        ax.set_ylabel("Risk")
+        
+        st.pyplot(fig)
+        plt.close(fig)
+        # 🔥 FINAL SUMMARY BOX
+        final_risk = risks[-1]
+        reduction = initial_risk - final_risk
+        
+        st.success(
+            f"Final Risk: {final_risk:.2%}  |  Reduction: {reduction:.2%}"
+        )
+        
+        # 🔥 INTERPRETATION
+        if reduction > 0.3:
+            st.success("Excellent improvement with lifestyle changes 🚀")
+        elif reduction > 0.15:
+            st.warning("Moderate improvement possible ⚠️")
+        else:
+            st.error("Limited improvement — medical attention advised ❗")
